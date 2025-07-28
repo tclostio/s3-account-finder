@@ -1,0 +1,74 @@
+package s3accountfinder
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+)
+
+func main() {
+	// Define command-line flags
+	var (
+		profile = flag.String("profile", "Default", "AWS profile to use")
+		role    = flag.String("role-name", "s3-account-finder-role", "ARN of role to assume. This role should have s3:GetObject and/or S3:ListBucket permissions")
+		path    = flag.String("path", "", "Path to the S3 bucket")
+	)
+
+	if *role == "" || *path == "" {
+		flag.Usage()
+		return
+	}
+
+	// Parse the flags
+	flag.Parse()
+
+	access, err := listS3Objects(*profile, *role, *path)
+
+	if err == nil {
+		fmt.Print(access)
+	}
+}
+
+// listS3Objects lists objects in the specified S3 path using the given profile and role ARN.
+func listS3Objects(profile, role, path string) (int, error) {
+	ctx := context.Background()
+
+	// Load config with profile
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithSharedConfigProfile(profile))
+	if err != nil {
+		return 0, fmt.Errorf("failed to load AWS config: %w", err)
+	}
+
+	// Parse bucket and prefix from path (format: bucket/prefix)
+	var bucket, prefix string
+	if path != "" {
+		parts := strings.SplitN(path, "/", 2)
+		bucket = parts[0]
+		if len(parts) > 1 {
+			prefix = parts[1]
+		}
+	} else {
+		return 0, fmt.Errorf("path must be in format bucket/prefix")
+	}
+
+	s3Client := s3.NewFromConfig(cfg)
+	input := &s3.ListObjectsV2Input{
+		Bucket: aws.String(bucket),
+		Prefix: aws.String(prefix),
+	}
+
+	resp, err := s3Client.ListObjectsV2(ctx, input)
+	if err != nil {
+		return 0, fmt.Errorf("failed to list S3 objects: %w", err)
+	}
+
+	for _, obj := range resp.Contents {
+		fmt.Println(*obj.Key)
+	}
+	return 1, nil
+}
