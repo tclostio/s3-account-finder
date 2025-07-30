@@ -10,10 +10,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/iam/types"
 )
 
-type roleWrapper struct {
-	IamClient *iam.Client
-}
-
 // PolicyDocument defines a policy document as a Go struct that can be serialized
 // to JSON.
 type PolicyDocument struct {
@@ -29,49 +25,67 @@ type PolicyStatement struct {
 	Resource  *string           `json:",omitempty"`
 }
 
-func (wrapper roleWrapper) createRole(ctx context.Context, roleName string, trustedUserArn string) (*types.Role, error) {
-	var role *types.Role
-	trustPolicy := PolicyDocument{
+func CreateS3Role(cfg aws.Config, ctx context.Context, roleName string, trustedUserArn string) (*types.Role, error) {
+	client := iam.NewFromConfig(cfg)
+
+	assumeRolePolicy := PolicyDocument{
 		Version: "2012-10-17",
-		Statement: []PolicyStatement{{
-			Effect:    "Allow",
-			Principal: map[string]string{"AWS": trustedUserArn},
-			Action:    []string{"sts:AssumeRole"},
-		}},
+		Statement: []PolicyStatement{
+			{
+				Effect: "Allow",
+				Principal: map[string]string{
+					"AWS": trustedUserArn,
+				},
+				Action: []string{"sts:AssumeRole"},
+			},
+		},
 	}
-	policyBytes, err := json.Marshal(trustPolicy)
+
+	policyBytes, err := json.Marshal(assumeRolePolicy)
 	if err != nil {
-		return nil, fmt.Errorf("Couldn't create trust policy for role %v. Error: %v\n", roleName, err)
+		return nil, fmt.Errorf("failed to marshal assume role policy: %w", err)
 	}
-	result, err := wrapper.IamClient.CreateRole(ctx, &iam.CreateRoleInput{
-		AssumeRolePolicyDocument: aws.String(string(policyBytes)),
+
+	input := &iam.CreateRoleInput{
 		RoleName:                 aws.String(roleName),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("Couldn't create role %v. Error: %v\n", roleName, err)
-	} else {
-		role = result.Role
+		AssumeRolePolicyDocument: aws.String(string(policyBytes)),
 	}
-	return role, err
+
+	output, err := client.CreateRole(ctx, input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create role: %w", err)
+	}
+
+	return output.Role, nil
 }
 
-func (wrapper roleWrapper) deleteRole(ctx context.Context, roleName string) error {
-	_, err := wrapper.IamClient.DeleteRole(ctx, &iam.DeleteRoleInput{
+func DeleteS3Role(cfg aws.Config, ctx context.Context, roleName string) error {
+	client := iam.NewFromConfig(cfg)
+
+	input := &iam.DeleteRoleInput{
 		RoleName: aws.String(roleName),
-	})
-	if err != nil {
-		return fmt.Errorf("Failed to delete role %v. Error: %v\n", roleName, err)
 	}
-	return err
+
+	_, err := client.DeleteRole(ctx, input)
+	if err != nil {
+		return fmt.Errorf("failed to delete role: %w", err)
+	}
+
+	return nil
 }
 
-func (wrapper roleWrapper) attachRolePolicy(ctx context.Context, roleName string, policyArn string) error {
-	_, err := wrapper.IamClient.AttachRolePolicy(ctx, &iam.AttachRolePolicyInput{
+func AttachS3RolePolicy(ctx context.Context, roleName string, policyArn string) error {
+	client := iam.NewFromConfig(aws.Config{})
+
+	input := &iam.AttachRolePolicyInput{
 		RoleName:  aws.String(roleName),
 		PolicyArn: aws.String(policyArn),
-	})
-	if err != nil {
-		return fmt.Errorf("Failed to attach policy %v to role %v. Error: %v\n", policyArn, roleName, err)
 	}
+
+	_, err := client.AttachRolePolicy(ctx, input)
+	if err != nil {
+		return fmt.Errorf("failed to attach policy to role: %w", err)
+	}
+
 	return nil
 }
