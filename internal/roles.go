@@ -1,3 +1,9 @@
+// Logic to create ephemeral roles and attach enumeration policies.
+//
+// Author: Trent Clostio (twclostio@gmail.com)
+// License: MIT
+//
+
 package roles
 
 import (
@@ -10,6 +16,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/iam/types"
 )
 
+type Option func(p PolicyStatement) PolicyStatement
+
 // PolicyDocument defines a policy document as a Go struct that can be serialized
 // to JSON.
 type PolicyDocument struct {
@@ -19,10 +27,40 @@ type PolicyDocument struct {
 
 // PolicyStatement defines a statement in a policy document.
 type PolicyStatement struct {
+	Sid       string
 	Effect    string
 	Action    []string
-	Principal map[string]string `json:",omitempty"`
-	Resource  *string           `json:",omitempty"`
+	Principal map[string]string
+	Resource  *string
+	Condition map[string]string
+}
+
+func newPolicyDocument(version string, policyStatement PolicyStatement) PolicyDocument {
+	p := PolicyDocument{}
+	p.Version = version
+	p.Statement = []PolicyStatement{}
+
+	return p
+}
+
+func newPolicyStatement(sid string, effect string, action []string, resource *string, options ...Option) PolicyStatement {
+	p := PolicyStatement{}
+	p.Sid = sid
+	p.Effect = effect
+	p.Action = action
+	p.Resource = resource
+	for _, o := range options {
+		p = o(p)
+	}
+
+	return p
+}
+
+func configureS3PolicyStatement(condition map[string]string) Option {
+	return func(p PolicyStatement) PolicyStatement {
+		p.Condition = condition
+		return p
+	}
 }
 
 func CreateS3Role(cfg aws.Config, ctx context.Context, roleName string, trustedUserArn string) (*types.Role, error) {
@@ -74,7 +112,7 @@ func DeleteS3Role(cfg aws.Config, ctx context.Context, roleName string) error {
 	return nil
 }
 
-func AttachS3RolePolicy(ctx context.Context, roleName string, policyArn string) error {
+func AttachS3EnumPolicy(ctx context.Context, roleName string, policyArn string) error {
 	client := iam.NewFromConfig(aws.Config{})
 
 	input := &iam.AttachRolePolicyInput{

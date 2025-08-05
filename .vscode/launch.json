@@ -10,7 +10,7 @@
             "request": "launch",
             "mode": "debug",
             "program": "${file}",
-            "args": ["-profile", "236055259940_AdministratorAccess", "-path", "test/bucket"],
+            "args": ["-profile", "236055259940_AdministratorAccess", "-path", "test/bucket", "-delete-existing-role"],
         }
     ]
 }

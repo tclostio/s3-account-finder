@@ -9,14 +9,17 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
@@ -29,7 +32,8 @@ func main() {
 		profile  = flag.String("profile", "Default", "AWS profile to use")
 		roleName = flag.String("role-name", "s3-account-finder-role", "Role name for attacker")
 		path     = flag.String("path", "", "Path to the S3 bucket")
-		delete   = flag.Bool("delete-existing", false, "Delete existing role if one exists")
+		region   = flag.String("region", "us-east-1", "The AWS region to use")
+		delete   = flag.Bool("delete-existing-role", false, "Delete existing role if one exists")
 	)
 	flag.Parse()
 
@@ -38,9 +42,17 @@ func main() {
 		return
 	}
 
+	// turn off cert validation for proxying requests
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	client := &http.Client{Transport: tr}
+
 	// setting context and AWS config
 	ctx := context.Background()
-	cfg, err := config.LoadDefaultConfig(ctx, config.WithSharedConfigProfile(*profile), config.WithRegion("us-east-1"))
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithSharedConfigProfile(*profile),
+		config.WithRegion(*region),
+		config.WithHTTPClient(client))
 	if err != nil {
 		log.Println(fmt.Errorf("failed to load AWS config: %w", err))
 		os.Exit(1)
@@ -64,9 +76,9 @@ func main() {
 		log.Println(fmt.Errorf("Error: %w", err))
 	}
 	if *roleInfo.Role.RoleName == *roleName {
-		fmt.Println("Info: role %w exists in account.", *roleName)
+		fmt.Printf("[!] Info: role %s exists in account.\n", *roleName)
 		if *delete {
-			fmt.Println("Deleting existing role %w", *roleName)
+			fmt.Printf("Deleting existing role %s\n", *roleName)
 			roles.DeleteS3Role(cfg, ctx, *roleName)
 		} else {
 			flag.Usage()
@@ -77,12 +89,21 @@ func main() {
 	role, err := roles.CreateS3Role(cfg, ctx, *roleName, userArn)
 	if err != nil {
 		log.Println(fmt.Errorf("Error: %w", err))
+		os.Exit(1)
 	}
 
-	fmt.Print(*role.Arn)
-	fmt.Print(*roleInfo)
+	assumeRoleProvider := stscreds.NewAssumeRoleProvider(stsClient, *role.Arn)
+	assumedCfg, err := config.LoadDefaultConfig(ctx,
+		config.WithRegion(*region),
+		config.WithCredentialsProvider(assumeRoleProvider),
+		config.WithHTTPClient(client),
+	)
+	if err != nil {
+		log.Println(fmt.Errorf("failed to assume role: %w", err))
+		os.Exit(1)
+	}
 
-	// Parse bucket and prefix from path (format: bucket/prefix)
+	// parse bucket and prefix from path (format: bucket/prefix)
 	var bucket, prefix string
 	if *path != "" {
 		parts := strings.SplitN(*path, "/", 2)
@@ -94,7 +115,7 @@ func main() {
 		log.Println(fmt.Errorf("path must be in format bucket/prefix"))
 	}
 
-	s3Client := s3.NewFromConfig(cfg)
+	s3Client := s3.NewFromConfig(assumedCfg)
 	input := &s3.ListObjectsV2Input{
 		Bucket: aws.String(bucket),
 		Prefix: aws.String(prefix),
@@ -103,9 +124,17 @@ func main() {
 	resp, err := s3Client.ListObjectsV2(ctx, input)
 	if err != nil {
 		log.Println(fmt.Errorf("failed to list S3 objects: %w", err))
+		os.Exit(1)
+	} else {
+		for _, obj := range resp.Contents {
+			fmt.Println(*obj.Key)
+		}
 	}
 
-	for _, obj := range resp.Contents {
-		fmt.Println(*obj.Key)
+	// cleanup role
+	err = roles.DeleteS3Role(cfg, ctx, *roleName)
+	if err != nil {
+		log.Println(fmt.Errorf("failed to delete S3 role: %w", err))
+		os.Exit(1)
 	}
 }
